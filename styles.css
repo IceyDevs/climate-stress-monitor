@@ -217,7 +217,7 @@ hr{
 
 }
 
-/* ---------- RESPONSIVE ---------- */
+/* ---------- RESPONSIVE — TABLET ---------- */
 
 @media screen and (max-width:1200px){
 
@@ -227,6 +227,72 @@ hr{
 
 h1,h2,h3{
     font-size:20px;
+}
+
+}
+
+/* ---------- RESPONSIVE — MOBILE ---------- */
+
+@media screen and (max-width:768px){
+
+/* Shrink the glowing title so it doesn't overflow */
+.title{
+    font-size:22px;
+    letter-spacing:0;
+}
+
+.subtitle{
+    font-size:13px;
+    letter-spacing:0;
+}
+
+h1,h2,h3{
+    font-size:16px;
+}
+
+/* Tighter container padding on phone */
+.main .block-container{
+    padding-left:1rem;
+    padding-right:1rem;
+    padding-top:1rem;
+}
+
+/* Metric cards: reduce padding, keep them readable */
+.stMetric{
+    padding:10px;
+    border-radius:8px;
+}
+
+.stMetric div{
+    font-size:16px;
+}
+
+/* Tabs: allow horizontal scroll so labels don't get clipped */
+[data-testid="stTabs"] > div:first-child{
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    flex-wrap: nowrap;
+}
+
+[data-testid="stTabs"] button{
+    white-space: nowrap;
+    font-size: 12px;
+    padding: 6px 10px;
+}
+
+/* Charts: reduce internal padding */
+.js-plotly-plot{
+    padding:4px;
+}
+
+/* Map iframe: full width, shorter height on phone */
+iframe{
+    height:260px !important;
+}
+
+/* Plotly modebar (toolbar) — hide on mobile to save space */
+.modebar{
+    display:none !important;
 }
 
 }
