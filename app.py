@@ -145,55 +145,74 @@ st.caption("Real-time environmental stress monitoring for cities and strategic b
 #  API HELPERS (CACHED)
 # ─────────────────────────────────────────────
 
-@st.cache_data(ttl=3600)  # 1-hour TTL — coordinates don't change between reloads
-def search_location(city_name: str):
+def _nominatim_fetch(city_name: str):
     """
-    Nominatim (OpenStreetMap) geocoder.
-    - 1-hour cache TTL so coordinates survive multiple app reloads
-      without hitting Nominatim again (fixes 'not found' on reload)
-    - 1-second delay on every call to respect Nominatim's fair-use policy
-    - Retries up to 3 times with exponential backoff on HTTP 429 or timeout
-    - India-scoped first pass, global fallback on empty result
+    Raw Nominatim call — NOT cached so time.sleep() works correctly.
+    sleep(1) must live outside @st.cache_data to avoid Streamlit blocking issues.
+    Returns a list of result dicts with keys: display_name, lat, lon (strings).
     """
     import time
+    time.sleep(1)  # Respect Nominatim's 1 req/sec fair-use policy
 
     url     = "https://nominatim.openstreetmap.org/search"
     headers = {"User-Agent": "ClimateInfraMonitor/1.0"}
-    base_params = {
-        "q":              city_name,
-        "format":         "jsonv2",
-        "addressdetails": 1,
-        "limit":          8,
-    }
+    base    = {"q": city_name, "format": "jsonv2", "addressdetails": 1, "limit": 8}
 
-    def _fetch(params, attempt=0):
-        max_attempts = 3
-        try:
-            time.sleep(1)  # Always wait 1s — Nominatim allows max 1 req/sec
-            resp = requests.get(url, params=params, headers=headers, timeout=10)
-            if resp.status_code == 429:
-                # Rate limited — back off and retry
-                if attempt < max_attempts:
-                    time.sleep(2 ** attempt)
-                    return _fetch(params, attempt + 1)
-                return []
-            data = resp.json()
-            return data if isinstance(data, list) else []
-        except requests.exceptions.Timeout:
-            if attempt < max_attempts:
-                time.sleep(2 ** attempt)
-                return _fetch(params, attempt + 1)
+    try:
+        # India-scoped first
+        r = requests.get(url, params={**base, "countrycodes": "in"}, headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and data:
+                return data
+        # Global fallback
+        r = requests.get(url, params=base, headers=headers, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if isinstance(data, list) and data:
+                return data
+    except Exception:
+        pass
+    return []
+
+
+def _openmeteo_geocode(city_name: str):
+    """
+    Open-Meteo geocoder fallback — no rate limit, no key required.
+    Normalises results to the same {display_name, lat, lon} shape as Nominatim.
+    """
+    try:
+        url = f"https://geocoding-api.open-meteo.com/v1/search?name={city_name}&count=8&format=json"
+        r   = requests.get(url, timeout=10)
+        if r.status_code != 200:
             return []
-        except Exception:
-            return []
+        results = r.json().get("results", [])
+        normalised = []
+        for item in results:
+            label = f"{item.get('name','')}, {item.get('admin1','')}, {item.get('country','')}"
+            normalised.append({
+                "display_name": label.strip(", "),
+                "lat": str(item["latitude"]),
+                "lon": str(item["longitude"]),
+            })
+        return normalised
+    except Exception:
+        return []
 
-    # First pass — India only
-    res = _fetch({**base_params, "countrycodes": "in"})
-    if res:
-        return res
 
-    # Fallback — global, no country filter
-    return _fetch(base_params)
+@st.cache_data(ttl=3600)
+def search_location(city_name: str):
+    """
+    Two-source geocoder with 1-hour cache.
+    1. Tries Nominatim (better coverage of remote border areas)
+    2. Falls back to Open-Meteo geocoder if Nominatim returns nothing
+    Cache lives for 1 hour so reloads within that window never hit either API.
+    """
+    results = _nominatim_fetch(city_name)
+    if results:
+        return results
+    # Nominatim failed — use Open-Meteo as reliable fallback
+    return _openmeteo_geocode(city_name)
 
 
 @st.cache_data(ttl=600)
@@ -231,7 +250,7 @@ def get_smart_city_data(lat: float, lon: float):
 
 
 # ─────────────────────────────────────────────
-#  LOCATION DISAMBIGUATION — Nominatim
+#  LOCATION DISAMBIGUATION
 # ─────────────────────────────────────────────
 if not city:
     st.stop()
@@ -239,20 +258,19 @@ if not city:
 locations = search_location(city)
 if not locations:
     st.error(
-        f"❌ **'" + city + "' could not be resolved.** "
-        "This is usually a temporary rate limit from the geocoding service. "
-        "Wait 5 seconds and hit **Reboot Telemetry** in the sidebar, or try typing the city name again."
+        f"❌ **'{city}' could not be found.** "
+        "Check the spelling or try a nearby larger town. "
+        "If this keeps happening, hit **Reboot Telemetry** in the sidebar."
     )
     st.stop()
 
-# Nominatim returns display_name (full address string) and lat/lon as strings
-options = [l["display_name"] for l in locations]
-choice  = st.selectbox("📡 Confirm Location", options)
+# Both Nominatim and Open-Meteo results are normalised to display_name / lat / lon
+options  = [l["display_name"] for l in locations]
+choice   = st.selectbox("📡 Confirm Location", options)
 selected = locations[options.index(choice)]
 
 lat              = float(selected["lat"])
 lon              = float(selected["lon"])
-# Use the first part of display_name (place name before the first comma) as short name
 actual_city_name = selected["display_name"].split(",")[0].strip()
 
 st.caption(
