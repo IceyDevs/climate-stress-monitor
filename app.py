@@ -145,15 +145,18 @@ st.caption("Real-time environmental stress monitoring for cities and strategic b
 #  API HELPERS (CACHED)
 # ─────────────────────────────────────────────
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=3600)  # 1-hour TTL — coordinates don't change between reloads
 def search_location(city_name: str):
     """
     Nominatim (OpenStreetMap) geocoder.
-    - Tries India-scoped search first for clean results
-    - Falls back to global search if India search returns nothing
-      (handles remote/inconsistently-indexed border towns like Tawang)
-    - User-Agent header required by Nominatim's usage policy
+    - 1-hour cache TTL so coordinates survive multiple app reloads
+      without hitting Nominatim again (fixes 'not found' on reload)
+    - 1-second delay on every call to respect Nominatim's fair-use policy
+    - Retries up to 3 times with exponential backoff on HTTP 429 or timeout
+    - India-scoped first pass, global fallback on empty result
     """
+    import time
+
     url     = "https://nominatim.openstreetmap.org/search"
     headers = {"User-Agent": "ClimateInfraMonitor/1.0"}
     base_params = {
@@ -162,26 +165,35 @@ def search_location(city_name: str):
         "addressdetails": 1,
         "limit":          8,
     }
-    try:
-        # First pass — India only
-        res = requests.get(
-            url,
-            params={**base_params, "countrycodes": "in"},
-            headers=headers,
-            timeout=10
-        ).json()
-        if isinstance(res, list) and len(res) > 0:
-            return res
-        # Fallback — global search, no country filter
-        res = requests.get(
-            url,
-            params=base_params,
-            headers=headers,
-            timeout=10
-        ).json()
-        return res if isinstance(res, list) else []
-    except Exception:
-        return []
+
+    def _fetch(params, attempt=0):
+        max_attempts = 3
+        try:
+            time.sleep(1)  # Always wait 1s — Nominatim allows max 1 req/sec
+            resp = requests.get(url, params=params, headers=headers, timeout=10)
+            if resp.status_code == 429:
+                # Rate limited — back off and retry
+                if attempt < max_attempts:
+                    time.sleep(2 ** attempt)
+                    return _fetch(params, attempt + 1)
+                return []
+            data = resp.json()
+            return data if isinstance(data, list) else []
+        except requests.exceptions.Timeout:
+            if attempt < max_attempts:
+                time.sleep(2 ** attempt)
+                return _fetch(params, attempt + 1)
+            return []
+        except Exception:
+            return []
+
+    # First pass — India only
+    res = _fetch({**base_params, "countrycodes": "in"})
+    if res:
+        return res
+
+    # Fallback — global, no country filter
+    return _fetch(base_params)
 
 
 @st.cache_data(ttl=600)
@@ -226,7 +238,11 @@ if not city:
 
 locations = search_location(city)
 if not locations:
-    st.error(f"❌ '{city}' not found. Try a nearby town or check the spelling.")
+    st.error(
+        f"❌ **'" + city + "' could not be resolved.** "
+        "This is usually a temporary rate limit from the geocoding service. "
+        "Wait 5 seconds and hit **Reboot Telemetry** in the sidebar, or try typing the city name again."
+    )
     st.stop()
 
 # Nominatim returns display_name (full address string) and lat/lon as strings
